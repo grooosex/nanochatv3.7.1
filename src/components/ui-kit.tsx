@@ -418,6 +418,7 @@ export function Modal({
   open,
   onClose,
   title,
+  titleAside,
   children,
   wide,
   hideClose,
@@ -425,6 +426,7 @@ export function Modal({
   open: boolean;
   onClose: () => void;
   title?: string;
+  titleAside?: ReactNode;
   children: ReactNode;
   wide?: boolean;
   hideClose?: boolean;
@@ -439,8 +441,9 @@ export function Modal({
           wide ? "max-w-lg" : "max-w-sm",
         )}
       >
-        <div className={cn("sticky top-0 z-10 flex items-center bg-bg px-5 pt-5 pb-4", hideClose ? "" : "justify-between")}>
-          <h2 className="text-[18px] font-semibold">{title}</h2>
+        <div className="sticky top-0 z-10 flex items-center gap-2 bg-bg px-5 pt-5 pb-4">
+          <h2 className="min-w-0 flex-1 truncate text-[18px] font-semibold">{title}</h2>
+          {titleAside}
           {!hideClose && (
             <IconBtn onClick={onClose} className="size-9">
               <X className="size-5" />

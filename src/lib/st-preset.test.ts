@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseChatCompletionPreset, substituteMacros, uniquePresetName, imagePresetStyle, defaultSampler } from "./st-preset.ts";
+import { parseChatCompletionPreset, substituteMacros, uniquePresetName, imagePresetStyle, defaultSampler, presetTexts } from "./st-preset.ts";
 import { systemFor, RP_SYSTEM, POLISH_SYSTEM, FIELD_SYSTEM } from "./prompts.ts";
 
 const sample = {
@@ -101,6 +101,49 @@ describe("st chat completion preset", () => {
     assert.equal(p.postHistory.includes("调用工具"), false);
     assert.equal(p.items?.find((item) => item.name === "关掉")?.enabled, false);
     assert.equal(p.items?.find((item) => item.name === "防截断2.0")?.usable, false);
+  });
+
+  it("keeps a plain anti-cutoff entry usable, and freezes the old dump separately", () => {
+    const p = parseChatCompletionPreset(
+      {
+        prompts: [
+          { identifier: "a", name: "开着", content: "要发", enabled: true },
+          { identifier: "chatHistory", name: "Chat History", marker: true, content: "" },
+          { identifier: "b", name: "文风", content: "文风正文", enabled: true },
+          { identifier: "c", name: "关掉", content: "不要发", enabled: false },
+          { identifier: "cut", name: "防截断", content: "写完整", enabled: false },
+          { identifier: "d", name: "防截断2.0", content: "必须调用game_content函数工具", enabled: true },
+          { identifier: "junk", name: "废稿", content: "不在表里", enabled: true },
+        ],
+        prompt_order: [
+          { character_id: 100000, order: [] },
+          {
+            character_id: 100001,
+            order: [
+              { identifier: "a", enabled: true },
+              { identifier: "chatHistory", enabled: true },
+              { identifier: "b", enabled: true },
+              { identifier: "c", enabled: false },
+              { identifier: "cut", enabled: false },
+              { identifier: "d", enabled: true },
+            ],
+          },
+        ],
+      },
+      "Reborn.json",
+    );
+    assert.equal(p.items?.find((item) => item.name === "防截断")?.usable, true);
+    assert.equal(p.items?.find((item) => item.name === "防截断")?.original, "写完整");
+    assert.equal(p.items?.find((item) => item.name === "防截断2.0")?.usable, false);
+    assert.equal(p.systemPrompt.includes("不要发"), false);
+    assert.equal(p.systemPrompt.includes("不在表里"), false);
+    assert.match(p.legacySystemPrompt || "", /不要发/);
+    assert.match(p.legacySystemPrompt || "", /不在表里/);
+    assert.match(p.legacySystemPrompt || "", /写完整/);
+    assert.equal((p.legacySystemPrompt || "").includes("调用"), true);
+    assert.equal(presetTexts(p, "new").systemPrompt.includes("不要发"), false);
+    assert.match(presetTexts(p, "old").systemPrompt, /不要发/);
+    assert.match(presetTexts(p, "old").systemPrompt, /不在表里/);
   });
 
   it("restoring default sampler leaves locked numbers alone", () => {

@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { createPortal } from "react-dom";
-import { Check, ChevronDown, Download, FileUp, Lock, Pencil, Settings, Star, Trash2, Upload, X } from "lucide-react";
+import { Check, ChevronDown, Download, FileUp, Lock, Pencil, RotateCcw, Settings, Star, Trash2, Upload, X } from "lucide-react";
 import { DEFAULT_NAI_BASE, shortModelLabel } from "@/lib/constants";
 import { exportArchive, importArchive } from "@/lib/archive";
 import { fetchLlmModels } from "@/lib/grok-client";
@@ -686,16 +685,12 @@ function ChatPresetPicker() {
             <ChevronDown className={cn("size-4 transition", open && "rotate-180")} />
           </button>
         </div>
-        {open &&
-          pos &&
-          createPortal(
-            <div
-              ref={menu}
-              className="fixed z-[85] overflow-hidden rounded-[16px] border border-line bg-card shadow-[0_16px_40px_rgb(44_40_36/0.16)]"
-              style={{ top: pos.top, left: pos.left, width: pos.width }}
-            >
-              <div className="overflow-auto overscroll-contain scroll-hide" style={{ maxHeight: pos.maxH }}>
-                {presets.length === 0 ? (
+        {open && (
+          <div
+            ref={menu}
+            className="mt-1 max-h-60 overflow-auto overscroll-contain rounded-[16px] border border-line bg-card shadow-[0_16px_40px_rgb(44_40_36/0.16)] scroll-hide"
+          >
+            {presets.length === 0 ? (
                   <p className="px-4 py-6 text-center text-[13px] text-muted">还没有导入的预设</p>
                 ) : (
                   presets.map((p) => (
@@ -724,10 +719,8 @@ function ChatPresetPicker() {
                     </div>
                   ))
                 )}
-              </div>
-            </div>,
-            document.body,
-          )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -992,9 +985,62 @@ function PresetSheet({ onClose }: { onClose: () => void }) {
     setEdit(null);
   };
 
+  const oldMode = settings.stPresetMode === "old";
+  const hasLegacy = typeof preset?.legacySystemPrompt === "string" || typeof preset?.legacyPostHistory === "string";
+  const editing = preset?.items?.find((item) => item.id === edit?.id);
+  const canRestore = Boolean(edit && !edit.readOnly && typeof editing?.original === "string");
+
+  const restoreOriginal = () => {
+    if (!edit || edit.readOnly || typeof editing?.original !== "string") return;
+    const text = editing.original;
+    const id = edit.id;
+    patchActivePreset((p) => {
+      if (!p.items) return p;
+      return sealPreset({
+        ...p,
+        items: p.items.map((row) => (row.id === id ? { ...row, content: text } : row)),
+      });
+    });
+    setEdit({ ...edit, text });
+    useApp.getState().toast("已还原");
+  };
+
+  const setMode = (mode: "new" | "old") => {
+    useApp.getState().setSettings({ stPresetMode: mode });
+    if (mode === "old" && preset && !hasLegacy) {
+      useApp.getState().toast("这份是以前导入的，没有旧版内容，请重新导入");
+    }
+  };
+
   return (
     <SheetCard title="预设设置" onClose={onClose}>
       <ChatPresetPicker />
+      <div className="mt-3 flex items-center gap-5 text-[13px]">
+        {(
+          [
+            ["new", "新版方法"],
+            ["old", "旧版方法"],
+          ] as const
+        ).map(([id, label]) => {
+          const on = (oldMode ? "old" : "new") === id;
+          return (
+            <button key={id} type="button" className="inline-flex items-center gap-1.5" onClick={() => setMode(id)}>
+              <span
+                className={cn(
+                  "grid size-4 place-items-center rounded-full border",
+                  on ? "border-primary" : "border-line-strong",
+                )}
+              >
+                {on ? <span className="size-2 rounded-full bg-primary" /> : null}
+              </span>
+              {label}
+            </button>
+          );
+        })}
+      </div>
+      {oldMode && preset && !hasLegacy ? (
+        <p className="mt-2 text-[12px] leading-relaxed text-muted">这份没有旧版内容。请重新导入。现在仍按新版发送。</p>
+      ) : null}
       <div className="mt-4 grid grid-cols-3 gap-2">
         {(
           [
@@ -1085,6 +1131,7 @@ function PresetSheet({ onClose }: { onClose: () => void }) {
         onChange={(n) => patchParam({ contextTurns: n })}
       />
       <div className="mb-2 mt-4 text-[14px] font-medium">内容开关</div>
+      {oldMode ? <p className="mb-2 text-[12px] leading-relaxed text-muted">旧版不看这些开关。要改内容，请切回新版方法。</p> : null}
       {!preset ? (
         <p className="text-[12px] text-muted">先选择一份预设。</p>
       ) : !preset.items?.length ? (
@@ -1093,35 +1140,50 @@ function PresetSheet({ onClose }: { onClose: () => void }) {
         </p>
       ) : (
         <div>
-          {preset.items.map((item) => (
-            <div key={item.id} className="flex items-center gap-2 border-b border-line/70 py-2.5 last:border-0">
-              <span
-                className={cn(
-                  "min-w-0 flex-1 truncate text-[13px]",
-                  item.usable ? (item.enabled ? "font-semibold text-ink" : "text-ink") : "text-faint",
-                )}
-              >
-                {item.name}
-              </span>
-              <button
-                type="button"
-                className={cn("grid size-8 shrink-0 place-items-center", item.usable ? "text-muted" : "text-faint")}
-                aria-label={item.usable ? `编辑${item.name}` : `查看${item.name}`}
-                onClick={() => setEdit({ id: item.id, name: item.name, text: item.content, readOnly: !item.usable })}
-              >
-                <Pencil className="size-3.5" />
-              </button>
-              <Switch
-                on={Boolean(item.usable && item.enabled)}
-                disabled={!item.usable}
-                label={item.name}
-                onChange={(v) => setItemEnabled(item, v)}
-              />
-            </div>
-          ))}
+          {preset.items.map((item) => {
+            const live = item.usable && !oldMode;
+            return (
+              <div key={item.id} className="flex items-center gap-2 border-b border-line/70 py-2.5 last:border-0">
+                <span
+                  className={cn(
+                    "min-w-0 flex-1 truncate text-[13px]",
+                    live ? (item.enabled ? "font-semibold text-ink" : "text-ink") : "text-faint",
+                  )}
+                >
+                  {item.name}
+                </span>
+                <button
+                  type="button"
+                  className={cn("grid size-8 shrink-0 place-items-center", live ? "text-muted" : "text-faint")}
+                  aria-label={live ? `编辑${item.name}` : `查看${item.name}`}
+                  onClick={() => setEdit({ id: item.id, name: item.name, text: item.content, readOnly: !live })}
+                >
+                  <Pencil className="size-3.5" />
+                </button>
+                <Switch
+                  on={Boolean(live && item.enabled)}
+                  disabled={!live}
+                  label={item.name}
+                  onChange={(v) => setItemEnabled(item, v)}
+                />
+              </div>
+            );
+          })}
         </div>
       )}
-      <Modal open={Boolean(edit)} onClose={() => setEdit(null)} title={edit?.name || "内容"} wide>
+      <Modal
+        open={Boolean(edit)}
+        onClose={() => setEdit(null)}
+        title={edit?.name || "内容"}
+        wide
+        titleAside={
+          canRestore ? (
+            <button type="button" className="grid size-9 place-items-center text-muted" aria-label="还原" onClick={restoreOriginal}>
+              <RotateCcw className="size-4" />
+            </button>
+          ) : null
+        }
+      >
         <TextArea
           className={cn("min-h-[200px]", edit?.readOnly && "text-muted")}
           value={edit?.text ?? ""}
@@ -1132,7 +1194,9 @@ function PresetSheet({ onClose }: { onClose: () => void }) {
           }}
         />
         {edit?.readOnly ? (
-          <p className="mt-2 text-[12px] text-muted">这一条绘语用不上，只给查看，不会发送。</p>
+          <p className="mt-2 text-[12px] text-muted">
+            {oldMode ? "旧版方法不能改这些条目。" : "这一条绘语用不上，只给查看，不会发送。"}
+          </p>
         ) : (
           <PrimaryBtn className="mt-4" onClick={saveEdit}>
             保存
@@ -1230,16 +1294,12 @@ function AccountPicker({
         </span>
       </div>
       <TextInput type="password" value={keyValue} placeholder="" onChange={(e) => onKeyChange(e.target.value)} />
-      {open &&
-        pos &&
-        createPortal(
-          <div
-            ref={menu}
-            className="fixed z-[85] overflow-hidden rounded-[16px] border border-line bg-card shadow-[0_16px_40px_rgb(44_40_36/0.16)]"
-            style={{ top: pos.top, left: pos.left, width: pos.width }}
-          >
-            <div className="overflow-auto overscroll-contain scroll-hide" style={{ maxHeight: pos.maxH }}>
-              {accounts.length === 0 ? (
+      {open && (
+        <div
+          ref={menu}
+          className="mt-1 max-h-60 overflow-auto overscroll-contain rounded-[16px] border border-line bg-card shadow-[0_16px_40px_rgb(44_40_36/0.16)] scroll-hide"
+        >
+          {accounts.length === 0 ? (
                 <p className="px-4 py-6 text-center text-[13px] text-muted">还没有保存的账号</p>
               ) : (
                 accounts.map((a) => (
@@ -1266,10 +1326,8 @@ function AccountPicker({
                   </div>
                 ))
               )}
-            </div>
-          </div>,
-          document.body,
-        )}
+        </div>
+      )}
     </div>
   );
 }
@@ -1384,16 +1442,12 @@ function ModelPicker({
           <ChevronDown className={cn("size-4 text-muted transition", open && "rotate-180")} />
         </button>
       </div>
-      {open &&
-        pos &&
-        createPortal(
-          <div
-            ref={menu}
-            className="fixed z-[85] overflow-hidden rounded-[16px] border border-line bg-card shadow-[0_16px_40px_rgb(44_40_36/0.16)]"
-            style={{ top: pos.top, left: pos.left, width: pos.width }}
-          >
-            <div className="overflow-auto overscroll-contain scroll-hide" style={{ maxHeight: pos.maxH }}>
-              {filtered.length === 0 ? (
+      {open && (
+        <div
+          ref={menu}
+          className="mt-1 max-h-60 overflow-auto overscroll-contain rounded-[16px] border border-line bg-card shadow-[0_16px_40px_rgb(44_40_36/0.16)] scroll-hide"
+        >
+          {filtered.length === 0 ? (
                 <p className="px-4 py-6 text-center text-[13px] text-muted">
                   {connected ? "没有匹配的模型" : "连接后才会出现列表"}
                 </p>
@@ -1428,10 +1482,8 @@ function ModelPicker({
                   );
                 })
               )}
-            </div>
-          </div>,
-          document.body,
-        )}
+        </div>
+      )}
     </div>
   );
 }

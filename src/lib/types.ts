@@ -355,6 +355,8 @@ export interface StPromptItem {
   id: string;
   name: string;
   content: string;
+  /** 导入时的原文。只给还原按钮用，不会发给模型。 */
+  original?: string;
   enabled: boolean;
   /** before：聊天记录前面。after：聊天记录后面。 */
   place: "before" | "after";
@@ -367,6 +369,9 @@ export interface StPreset {
   name: string;
   systemPrompt: string;
   postHistory: string;
+  /** 按旧版算法在导入时封存的两段。新版里改条目不会改这里。 */
+  legacySystemPrompt?: string;
+  legacyPostHistory?: string;
   params: StPresetParams;
   items?: StPromptItem[];
 }
@@ -396,6 +401,8 @@ export interface Settings {
   stUseChat?: boolean;
   stUseImage?: boolean;
   stUseWechat?: boolean;
+  /** 新版按开关发送。旧版用导入时封存的整段。 */
+  stPresetMode?: "new" | "old";
   naiKey: string;
   naiBase: string;
   naiConnected: boolean;

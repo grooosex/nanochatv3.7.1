@@ -46,6 +46,7 @@ function parseItems(raw: unknown): StPromptItem[] | undefined {
       enabled: o.enabled === true,
       place: o.place === "after" ? "after" : "before",
       usable: o.usable !== false,
+      ...(typeof o.original === "string" ? { original: o.original } : {}),
     });
   }
   return out;
@@ -71,6 +72,8 @@ export function parseStPresets(raw: unknown): StPreset[] {
         presencePenalty: num(o.params && rec(o.params)?.presencePenalty),
         maxTokens: num(o.params && rec(o.params)?.maxTokens),
       },
+      ...(typeof o.legacySystemPrompt === "string" ? { legacySystemPrompt: o.legacySystemPrompt } : {}),
+      ...(typeof o.legacyPostHistory === "string" ? { legacyPostHistory: o.legacyPostHistory } : {}),
       ...(items ? { items } : {}),
     });
   }
@@ -150,9 +153,15 @@ function isSlot(p: PromptRow) {
   return false;
 }
 
+function asksForTool(p: PromptRow) {
+  if (/game_content/i.test(p.content)) return true;
+  if (/function\s*call|tool_call/i.test(p.content)) return true;
+  return /调用[\s\S]{0,24}(函数|工具)/.test(p.content);
+}
+
 function isUnusable(p: PromptRow) {
   if (isSlot(p)) return true;
-  if (p.name.includes("防截断")) return true;
+  if (asksForTool(p)) return true;
   if (p.name === "SPreset配置" || p.content.length > 20000) return true;
   return false;
 }
@@ -165,7 +174,16 @@ function isAfter(p: PromptRow, passedHistory: boolean) {
   return passedHistory;
 }
 
-export function presetTexts(preset: StPreset): { systemPrompt: string; postHistory: string } {
+export function presetTexts(preset: StPreset, mode: "new" | "old" = "new"): { systemPrompt: string; postHistory: string } {
+  if (
+    mode === "old" &&
+    (typeof preset.legacySystemPrompt === "string" || typeof preset.legacyPostHistory === "string")
+  ) {
+    return {
+      systemPrompt: preset.legacySystemPrompt ?? "",
+      postHistory: preset.legacyPostHistory ?? "",
+    };
+  }
   if (!preset.items?.length) return { systemPrompt: preset.systemPrompt, postHistory: preset.postHistory };
   const on = preset.items.filter((item) => item.enabled && item.usable && item.content.trim());
   return {
@@ -183,6 +201,51 @@ export function presetTexts(preset: StPreset): { systemPrompt: string; postHisto
 export function sealPreset(preset: StPreset): StPreset {
   const texts = presetTexts(preset);
   return { ...preset, systemPrompt: texts.systemPrompt, postHistory: texts.postHistory };
+}
+
+function isLegacyPost(p: PromptRow) {
+  const id = p.identifier.toLowerCase();
+  const name = p.name.toLowerCase();
+  return id === "jailbreak" || name.includes("post-history") || name.includes("post history") || p.injectionPosition === 1;
+}
+
+/** 旧版：全局顺序为空就整份都要；不看条目自己的开关。导入时封存，之后不跟着新版改。 */
+function legacyTexts(raw: Record<string, unknown>, prompts: PromptRow[]) {
+  const byId = new Map(prompts.map((p) => [p.identifier, p]));
+  const orders = Array.isArray(raw.prompt_order) ? raw.prompt_order : [];
+  let order: unknown[] = [];
+  for (const entry of orders) {
+    const o = rec(entry);
+    if (!o || !Array.isArray(o.order)) continue;
+    if (o.character_id === 100000 || o.character_id === "100000" || !order.length) order = o.order;
+    if (o.character_id === 100000 || o.character_id === "100000") break;
+  }
+  let listed = prompts;
+  if (order.length) {
+    const out: PromptRow[] = [];
+    const seen = new Set<string>();
+    for (const row of order) {
+      const o = rec(row);
+      if (!o || o.enabled === false) continue;
+      const id = str(o.identifier);
+      const p = byId.get(id);
+      if (!p || seen.has(id)) continue;
+      seen.add(id);
+      out.push(p);
+    }
+    listed = out;
+  }
+  const kept = listed.filter((p) => !isSlot(p) && p.content.trim());
+  return {
+    systemPrompt: kept
+      .filter((p) => !isLegacyPost(p))
+      .map((p) => p.content.trim())
+      .join("\n\n"),
+    postHistory: kept
+      .filter((p) => isLegacyPost(p))
+      .map((p) => p.content.trim())
+      .join("\n\n"),
+  };
 }
 
 export function parseChatCompletionPreset(raw: unknown, fileName: string): StPreset {
@@ -216,6 +279,7 @@ export function parseChatCompletionPreset(raw: unknown, fileName: string): StPre
       id: p.identifier,
       name: p.name,
       content: p.content,
+      original: p.content,
       enabled: p.enabled,
       place: history ? "before" : place,
       usable: !isUnusable(p),
@@ -225,11 +289,14 @@ export function parseChatCompletionPreset(raw: unknown, fileName: string): StPre
   if (!usable) throw new Error("这份预设没有可导入的提示词");
 
   const stem = fileName.replace(/\.json$/i, "").trim() || "未命名预设";
+  const legacy = legacyTexts(o, prompts);
   return sealPreset({
     id: uid("st_"),
     name: stem,
     systemPrompt: "",
     postHistory: "",
+    legacySystemPrompt: legacy.systemPrompt,
+    legacyPostHistory: legacy.postHistory,
     items,
     params: {
       temperature: num(o.temperature),
@@ -277,6 +344,10 @@ export function substituteMacros(text: string, ctx: MacroCtx): string {
   });
 }
 
+function readMode(settings: { stPresetMode?: "new" | "old" }) {
+  return settings.stPresetMode === "old" ? "old" : "new";
+}
+
 export function activePreset(settings: Settings): StPreset | null {
   const id = settings.stActiveId;
   if (!id) return null;
@@ -294,13 +365,13 @@ export function activeImagePreset(settings: {
 
 /** 只给单独写提示词。没选预设时返回空，调用处和以前一样。 */
 export function imagePresetStyle(
-  settings: { stImageActiveId?: string | null; stPresets?: StPreset[] },
+  settings: { stImageActiveId?: string | null; stPresets?: StPreset[]; stPresetMode?: "new" | "old" },
   chat?: Chat | null,
 ): { styleExtra?: string; postHistory?: string } {
   const preset = activeImagePreset(settings);
   if (!preset) return {};
   const ctx = macroContext(chat);
-  const texts = presetTexts(preset);
+  const texts = presetTexts(preset, readMode(settings));
   const sys = substituteMacros(texts.systemPrompt, ctx).trim();
   const post = substituteMacros(texts.postHistory, ctx).trim();
   const closer =
@@ -322,7 +393,7 @@ export function activeWechatPreset(settings: {
 
 /** 只给写微信回复。没选预设时返回空。预设不能改 JSON 格式。 */
 export function wechatPresetStyle(
-  settings: { stWechatActiveId?: string | null; stPresets?: StPreset[] },
+  settings: { stWechatActiveId?: string | null; stPresets?: StPreset[]; stPresetMode?: "new" | "old" },
   chat?: Chat | null,
   inlineImage = false,
   group = false,
@@ -330,7 +401,7 @@ export function wechatPresetStyle(
   const preset = activeWechatPreset(settings);
   if (!preset) return {};
   const ctx = macroContext(chat);
-  const texts = presetTexts(preset);
+  const texts = presetTexts(preset, readMode(settings));
   const sys = substituteMacros(texts.systemPrompt, ctx).trim();
   const post = substituteMacros(texts.postHistory, ctx).trim();
   const closer = group
@@ -399,7 +470,7 @@ export function presetStyle(
   const preset = activePreset(settings);
   if (!preset) return {};
   const ctx = macroContext(chat);
-  const texts = presetTexts(preset);
+  const texts = presetTexts(preset, readMode(settings));
   const sys = substituteMacros(texts.systemPrompt, ctx).trim();
   const post = substituteMacros(texts.postHistory, ctx).trim();
   if (task === "chat") {
