@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, type ReactNode, type PointerEvent as PE } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, ChevronLeft, ChevronUp, Check, Download, Loader2, Plus, RefreshCw, Sparkles, Trash2, X } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronUp, Check, Copy, Download, Loader2, Plus, RefreshCw, Sparkles, SquareArrowUp, Trash2, X } from "lucide-react";
 import { DEFAULT_STATUS_BAR, PLACEHOLDERS, emptyCharacter } from "@/lib/constants";
 import { polishAll, polishField, foldWindow } from "@/lib/engine";
 import { FIELD_LABELS } from "@/lib/prompts";
@@ -9,6 +9,7 @@ import { useApp, saveBlob } from "@/lib/store";
 import { compressRef } from "@/lib/ref-image";
 import { getImage, imageUrl } from "@/lib/idb";
 import { syncCharsFromRole } from "@/lib/nai";
+import { copyRole, parseRoleText } from "@/lib/role-text";
 import type { Chat, ExtraField } from "@/lib/types";
 import { uid } from "@/lib/utils";
 import { emptyMemory, foldCoveredEnd, memoryCaughtUp, memoryTurnStats } from "@/lib/chat-memory";
@@ -32,6 +33,8 @@ export function RoleEditor({ chat, mode }: { chat: Chat; mode: "create" | "edit"
   const [polished, setPolished] = useState(false);
   const [charSel, setCharSel] = useState(0);
   const [memPick, setMemPick] = useState(false);
+  const [recognizeOpen, setRecognizeOpen] = useState(false);
+  const [recognizeText, setRecognizeText] = useState("");
   const patch = (p: Partial<Chat>) => useApp.getState().patchChat(chat.id, p);
   const char = chat.characters[charSel] ?? chat.characters[0];
   const autoPolish = useApp((s) => s.ui.autoPolish);
@@ -54,6 +57,77 @@ export function RoleEditor({ chat, mode }: { chat: Chat; mode: "create" | "edit"
       isMulti,
       imageParams: syncCharsFromRole(chat.imageParams, characters, isMulti),
     });
+
+  const copyPersona = async () => {
+    const text = copyRole(chat);
+    if (!text.trim()) {
+      useApp.getState().toast("没有可复制的内容");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      useApp.getState().toast("已复制");
+    } catch {
+      useApp.getState().toast("复制失败");
+    }
+  };
+
+  const applyRecognized = () => {
+    const parsed = parseRoleText(recognizeText);
+    if (!parsed.matched) {
+      useApp.getState().toast("没认出标题");
+      return;
+    }
+    const people = parsed.people;
+    const shared: Partial<Chat> = {};
+    if (parsed.overview !== undefined) shared.overview = parsed.overview;
+    if (parsed.opening !== undefined) shared.opening = parsed.opening;
+    if (!chat.isMulti) {
+      const p = people[0];
+      const cur = chat.characters[0] ?? emptyCharacter(1);
+      const next = p
+        ? {
+            ...cur,
+            ...(p.name !== undefined ? { name: p.name } : {}),
+            ...(p.persona !== undefined ? { persona: p.persona } : {}),
+            ...(p.speech !== undefined ? { speech: p.speech } : {}),
+            ...(p.appearance !== undefined ? { appearance: p.appearance } : {}),
+          }
+        : cur;
+      patch({
+        ...shared,
+        characters: [next, ...chat.characters.slice(1)],
+        imageParams: {
+          ...chat.imageParams,
+          characters: chat.imageParams.characters.map((slot) =>
+            slot.id === next.id && p?.name !== undefined ? { ...slot, name: next.name } : slot,
+          ),
+        },
+      });
+      useApp.getState().toast(people.length > 1 ? "只填了第一个人" : "已填入");
+    } else {
+      let characters = [...chat.characters];
+      while (characters.length < Math.max(people.length, 1)) characters.push(emptyCharacter(characters.length + 1));
+      characters = characters.map((c, i) => {
+        const p = people[i];
+        if (!p) return c;
+        return {
+          ...c,
+          ...(p.name !== undefined ? { name: p.name } : {}),
+          ...(p.persona !== undefined ? { persona: p.persona } : {}),
+          ...(p.speech !== undefined ? { speech: p.speech } : {}),
+          ...(p.appearance !== undefined ? { appearance: p.appearance } : {}),
+        };
+      });
+      patch({
+        ...shared,
+        characters,
+        imageParams: syncCharsFromRole(chat.imageParams, characters, true),
+      });
+      useApp.getState().toast("已填入");
+    }
+    setRecognizeOpen(false);
+  };
 
   const runPolish = async (instruction?: string, mark: "all" | "personalize" = "all") => {
     if (busyRef.current) return;
@@ -196,9 +270,25 @@ export function RoleEditor({ chat, mode }: { chat: Chat; mode: "create" | "edit"
   return (
     <div className="h-full overflow-y-auto px-4 pb-56 pt-3 scroll-thin">
       <div className="mb-1 text-[11px] tracking-[0.14em] text-muted">{mode === "create" ? "NEW ROLE" : "EDIT ROLE"}</div>
-      <h1 className="mb-1 text-[20px] font-semibold">
-        {mode === "create" ? "写下她，再交给 Grok 补全" : "修改设定"}
-      </h1>
+      <div className="mb-1 flex items-center gap-1">
+        <h1 className={`min-w-0 flex-1 truncate whitespace-nowrap font-semibold leading-tight ${mode === "create" ? "text-[15px]" : "text-[20px]"}`}>
+          {mode === "create" ? "写下她，再交给 Grok 补全" : "修改设定"}
+        </h1>
+        <button type="button" className="grid size-8 shrink-0 place-items-center text-muted" aria-label="复制人设" onClick={() => void copyPersona()}>
+          <Copy className="size-4" />
+        </button>
+        <button
+          type="button"
+          className="grid size-8 shrink-0 place-items-center text-muted"
+          aria-label="识别人设"
+          onClick={() => {
+            setRecognizeText("");
+            setRecognizeOpen(true);
+          }}
+        >
+          <SquareArrowUp className="size-4" />
+        </button>
+      </div>
       {mode === "edit" && (
         <p className="mb-4 text-[12px] text-muted">保存后立刻对之后的对话生效。取消则不改动。</p>
       )}
@@ -667,6 +757,15 @@ export function RoleEditor({ chat, mode }: { chat: Chat; mode: "create" | "edit"
           </button>
         )}
       </div>
+      <Modal open={recognizeOpen} onClose={() => setRecognizeOpen(false)} title="识别人设">
+        <p className="mb-3 text-[12px] leading-relaxed text-muted">
+          按标题拆开。一行写「名字」「要求总览」「人设」「说话方式」「外貌备忘」或「开场场景」，也可以写成「名字：」或「【名字】」。对不上的不改。
+        </p>
+        <TextArea value={recognizeText} onChange={(e) => setRecognizeText(e.target.value)} placeholder="把人设贴在这里" />
+        <PrimaryBtn className="mt-3" onClick={applyRecognized}>
+          填入
+        </PrimaryBtn>
+      </Modal>
     </div>
   );
 }

@@ -7,18 +7,23 @@ import { imageUrl } from "@/lib/idb";
 import { fakePureChat, useApp, countFavsInGroup, favGroupDescendants } from "@/lib/store";
 import { promptPreview } from "@/lib/presets";
 import type { FavoriteItem, FavGroup, HistoryItem, ImageParams } from "@/lib/types";
-import { afterPaint, generateNai, genPhaseLabel, imageFailText } from "@/lib/engine";
+import { afterPaint, generateNai, imageFailText } from "@/lib/engine";
 import { autoScrollNearEdge, downloadBlob, indexFromY, moveId, nearestScroller, randomSeed, sortHistoryNewestFirst, uid } from "@/lib/utils";
 import { ParamsPane } from "./ParamsPane";
 import { ImagePick, type StoredPick } from "./ImagePick";
-import { IconBtn, PrimaryBtn, TextArea, TextInput, useCooldown } from "./ui-kit";
+import { IconBtn, Slider, TextArea, TextInput, useCooldown } from "./ui-kit";
 
-const HOLD_MS = 400;
+const HOLD_MS = 450;
+type GenPhase = "uploading" | "generating" | "receiving" | "waiting" | null;
 let drawing = false;
 let drawAbort: AbortController | null = null;
+let queue: { ac: AbortController; left: number } | null = null;
 
 export function cancelPureDraw() {
+  queue?.ac.abort();
+  queue = null;
   drawAbort?.abort();
+  drawing = false;
 }
 
 export function PurePane() {
@@ -29,9 +34,10 @@ export function PurePane() {
   const [viewId, setViewId] = useState<string | null>(null);
   const [url, setUrl] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
-  const [phase, setPhase] = useState<"uploading" | "generating" | "receiving" | null>(null);
+  const [phase, setPhase] = useState<GenPhase>(null);
   const [flipLock, setFlipLock] = useState(false);
   const [peekId, setPeekId] = useState<string | null>(null);
+  const [multiOpen, setMultiOpen] = useState(false);
   const peek = useApp((s) => (peekId ? s.favorites.find((f) => f.id === peekId) : undefined));
 
   const done = sortHistoryNewestFirst(history.filter((h) => h.status === "done" && h.blobId));
@@ -89,6 +95,24 @@ export function PurePane() {
   const jump = (section: string) => {
     useApp.getState().setUI({ paramsJump: section });
     setSheet("params");
+  };
+  const showDrawn = (id: string) => {
+    setPeekId(null);
+    setViewId(id);
+  };
+  const tapDraw = () => {
+    if (phase || drawing) {
+      cancelPureDraw();
+      setPhase(null);
+      return;
+    }
+    beginQueue(setPhase, showDrawn);
+  };
+  const startFromDialog = () => {
+    setMultiOpen(false);
+    cancelPureDraw();
+    setPhase(null);
+    beginQueue(setPhase, showDrawn);
   };
 
   return (
@@ -148,22 +172,25 @@ export function PurePane() {
         <IconBtn className="text-on-stage" onClick={() => openSheet("fav")}>
           <Bookmark className="size-5" />
         </IconBtn>
-        <PrimaryBtn
-          className="flex-1"
-          busy={Boolean(phase)}
-          onClick={() => {
-            if (phase) {
-              cancelPureDraw();
-              return;
-            }
-            void drawOne(setPhase, (id) => {
-              setPeekId(null);
-              setViewId(id);
-            });
-          }}
+        <DrawPress
+          className="inline-flex h-12 min-w-0 flex-1 items-center justify-center gap-2 rounded-full bg-primary px-5 text-[15px] font-medium text-on-primary shadow-[0_6px_16px_rgb(156_83_72/0.25)]"
+          onTap={tapDraw}
+          onHold={() => setMultiOpen(true)}
         >
-          {phase ? "取消" : "绘图"}
-        </PrimaryBtn>
+          {phase === "waiting" ? (
+            <>
+              <Loader2 className="size-4 animate-spin" />
+              等待中
+            </>
+          ) : phase ? (
+            <>
+              <Loader2 className="size-4 animate-spin" />
+              取消
+            </>
+          ) : (
+            "绘图"
+          )}
+        </DrawPress>
         <IconBtn
           className="text-on-stage"
           onClick={async () => {
@@ -186,16 +213,8 @@ export function PurePane() {
         <PureParamsSheet
           phase={phase}
           left={left}
-          onDraw={() => {
-            if (phase) {
-              cancelPureDraw();
-              return;
-            }
-            void drawOne(setPhase, (id) => {
-              setPeekId(null);
-              setViewId(id);
-            });
-          }}
+          onTap={tapDraw}
+          onHold={() => setMultiOpen(true)}
           onClose={closeSheet}
           onOpenFav={() => setSheet("fav")}
         />
@@ -209,6 +228,7 @@ export function PurePane() {
           onOpenParams={() => setSheet("params")}
         />
       )}
+      {multiOpen && <MultiDrawDialog onClose={() => setMultiOpen(false)} onStart={startFromDialog} />}
       {sheet === "hist" && (
         <HistSheet
           items={done}
@@ -1353,13 +1373,15 @@ function PureParamsSheet({
   onOpenFav,
   phase,
   left,
-  onDraw,
+  onTap,
+  onHold,
 }: {
   onClose: () => void;
   onOpenFav: () => void;
-  phase: "uploading" | "generating" | "receiving" | null;
+  phase: GenPhase;
   left: number;
-  onDraw: () => void;
+  onTap: () => void;
+  onHold: () => void;
 }) {
   const params = useApp((s) => s.pureParams);
   const grok = useApp((s) => s.settings.grokModelId);
@@ -1371,22 +1393,33 @@ function PureParamsSheet({
           <button type="button" className="font-serif text-[18px] leading-[26px]" onClick={onOpenFav}>
             参数设置
           </button>
-          <button
-            type="button"
-            className="absolute left-1/2 top-1/2 inline-flex h-[26px] min-w-16 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-primary px-3 text-[15px] leading-none text-on-primary"
-            onClick={onDraw}
+          <DrawPress
+            className="absolute left-1/2 top-1/2 inline-flex h-[26px] min-w-16 -translate-x-1/2 -translate-y-1/2 items-center justify-center gap-1 whitespace-nowrap rounded-full bg-primary px-3 text-[15px] leading-none text-on-primary"
+            onTap={onTap}
+            onHold={onHold}
           >
-            {phase ? <Loader2 className="size-3.5 animate-spin" /> : left > 0 ? `${left}s` : "绘图"}
-          </button>
+            {phase === "waiting" ? (
+              <>
+                <Loader2 className="size-3.5 animate-spin" />
+                等待中
+              </>
+            ) : phase ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : left > 0 ? (
+              `${left}s`
+            ) : (
+              "绘图"
+            )}
+          </DrawPress>
           <button className="ml-auto" onClick={onClose} aria-label="关闭">
             <X className="size-5" />
           </button>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
+          <ParamsPane chat={chat} mode="pure" />
           <div className="px-4">
             <ReadMeta />
           </div>
-          <ParamsPane chat={chat} mode="pure" />
         </div>
       </div>
     </div>
@@ -1458,23 +1491,22 @@ function ReadMeta() {
   );
 }
 
-async function drawOne(
-  setPhase: (v: "uploading" | "generating" | "receiving" | null) => void,
+async function drawOneImage(
+  ac: AbortController,
+  setPhase: (v: GenPhase) => void,
   showId: (id: string) => void,
-) {
+): Promise<"ok" | "fail" | "cancel"> {
   const params = useApp.getState().pureParams;
   const settings = useApp.getState().settings;
   const auth = naiDrawAuth(settings);
   if (!auth) {
     useApp.getState().toast("还没连接生图");
     useApp.getState().setUI({ connection: true });
-    return;
+    return "fail";
   }
-  if (drawing) return;
-  drawing = true;
-  const ac = new AbortController();
-  drawAbort = ac;
+  if (ac.signal.aborted) return "cancel";
   const seed = params.seedLocked && params.seed != null ? params.seed : randomSeed();
+  drawAbort = ac;
   setPhase("uploading");
   await afterPaint();
   try {
@@ -1509,11 +1541,223 @@ async function drawOne(
     };
     useApp.getState().addHistory(rec);
     showId(rec.id);
+    return "ok";
   } catch (e) {
     useApp.getState().toast(imageFailText(e, ac.signal));
-  } finally {
-    if (drawAbort === ac) drawAbort = null;
-    drawing = false;
-    setPhase(null);
+    return ac.signal.aborted ? "cancel" : "fail";
   }
+}
+
+function beginQueue(
+  setPhase: (v: GenPhase) => void,
+  showId: (id: string) => void,
+) {
+  const settings = useApp.getState().settings;
+  const infinite = settings.multiDrawInfinite === true;
+  const exactOn = !infinite && settings.multiDrawExactOn === true;
+  const count = exactOn
+    ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(1, Math.floor(Number(settings.multiDrawExact) || 1)))
+    : Math.min(10, Math.max(1, Math.round(settings.multiDrawCount || 1)));
+  const ac = new AbortController();
+  queue = { ac, left: infinite ? Number.POSITIVE_INFINITY : count };
+  drawing = true;
+  void runQueue(setPhase, showId);
+}
+
+async function runQueue(
+  setPhase: (v: GenPhase) => void,
+  showId: (id: string) => void,
+) {
+  const mine = queue;
+  if (!mine) return;
+  try {
+    while (queue === mine && mine.left > 0 && !mine.ac.signal.aborted) {
+      if (mine.left !== Number.POSITIVE_INFINITY) mine.left -= 1;
+      const auth = naiDrawAuth(useApp.getState().settings);
+      const result = await drawOneImage(mine.ac, setPhase, showId);
+      if (result !== "ok" || queue !== mine || mine.ac.signal.aborted) break;
+      if (mine.left <= 0) break;
+      if (auth?.mode === "proxy") {
+        const until = useApp.getState().settings.cooldownUntil;
+        if (until - Date.now() > 3000) {
+          setPhase("waiting");
+          await waitCooldown(mine.ac.signal);
+        }
+      }
+    }
+  } finally {
+    if (queue === mine) {
+      queue = null;
+      drawing = false;
+      drawAbort = null;
+      setPhase(null);
+    }
+  }
+}
+
+function waitCooldown(signal: AbortSignal) {
+  return new Promise<void>((resolve) => {
+    const tick = () => {
+      if (signal.aborted) {
+        resolve();
+        return;
+      }
+      const until = useApp.getState().settings.cooldownUntil;
+      if (until - Date.now() <= 3000) {
+        resolve();
+        return;
+      }
+      window.setTimeout(tick, 200);
+    };
+    tick();
+  });
+}
+
+function DrawPress({
+  className,
+  onTap,
+  onHold,
+  children,
+}: {
+  className?: string;
+  onTap: () => void;
+  onHold: () => void;
+  children: ReactNode;
+}) {
+  const timer = useRef<number | null>(null);
+  const held = useRef(false);
+  const clear = () => {
+    if (timer.current) window.clearTimeout(timer.current);
+    timer.current = null;
+  };
+  return (
+    <button
+      type="button"
+      className={`${className ?? ""} select-none`}
+      style={{ WebkitTouchCallout: "none", WebkitUserSelect: "none", userSelect: "none" }}
+      onContextMenu={(e) => e.preventDefault()}
+      onPointerDown={(e) => {
+        e.preventDefault();
+        held.current = false;
+        clear();
+        timer.current = window.setTimeout(() => {
+          held.current = true;
+          onHold();
+        }, HOLD_MS);
+      }}
+      onPointerUp={() => {
+        const was = held.current;
+        clear();
+        if (!was) onTap();
+      }}
+      onPointerCancel={clear}
+      onClick={(e) => e.preventDefault()}
+    >
+      {children}
+    </button>
+  );
+}
+
+function MultiDrawDialog({ onClose, onStart }: { onClose: () => void; onStart: () => void }) {
+  const count = useApp((s) => s.settings.multiDrawCount ?? 1);
+  const infinite = useApp((s) => s.settings.multiDrawInfinite === true);
+  const exactOn = useApp((s) => s.settings.multiDrawExactOn === true);
+  const exact = useApp((s) => s.settings.multiDrawExact ?? 1);
+  const [draft, setDraft] = useState(String(exact));
+  const locked = infinite || exactOn;
+  useEffect(() => setDraft(String(exact)), [exact]);
+  const commitExact = (raw: string) => {
+    const digits = raw.replace(/\D/g, "").replace(/^0+/, "");
+    setDraft(digits);
+    if (!digits) return;
+    const n = Math.floor(Number(digits));
+    if (!Number.isFinite(n) || n < 1) return;
+    useApp.getState().setSettings({ multiDrawExact: Math.min(n, Number.MAX_SAFE_INTEGER) });
+  };
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center px-6">
+      <button type="button" className="absolute inset-0 bg-overlay/40" onClick={onClose} aria-label="关闭" />
+      <div className="relative w-full max-w-sm rounded-[24px] bg-bg p-5 text-ink shadow-2xl">
+        <div className="mb-5 flex items-center">
+          <h2 className="text-[18px] font-semibold">多图设置</h2>
+          <button type="button" className="ml-auto" onClick={onClose} aria-label="关闭">
+            <X className="size-5" />
+          </button>
+        </div>
+        <div className={locked ? "pointer-events-none opacity-40" : ""}>
+          <Slider
+            min={1}
+            max={10}
+            step={1}
+            value={count}
+            disabled={locked}
+            onChange={(n) => useApp.getState().setSettings({ multiDrawCount: n })}
+          />
+          <div className="mt-1 flex justify-between text-[12px] text-muted">
+            <span>1</span>
+            <span>{count}</span>
+            <span>10</span>
+          </div>
+        </div>
+        <div className="mt-4 flex items-center gap-2">
+          <input
+            inputMode="numeric"
+            aria-label="连续张数"
+            value={draft}
+            onChange={(e) => commitExact(e.target.value)}
+            onBlur={() => {
+              if (!draft || Number(draft) < 1) setDraft(String(useApp.getState().settings.multiDrawExact ?? 1));
+            }}
+            className="h-10 min-w-0 flex-1 rounded-[10px] border border-line bg-card px-3 text-center text-[15px] outline-none"
+          />
+          <button
+            type="button"
+            className={`h-10 shrink-0 rounded-[10px] border px-4 text-[15px] ${
+              exactOn ? "border-primary bg-primary text-on-primary" : "border-line bg-card text-ink"
+            }`}
+            onClick={() => {
+              if (exactOn) {
+                useApp.getState().setSettings({ multiDrawExactOn: false });
+                return;
+              }
+              const n = Math.floor(Number(draft));
+              if (!draft || !Number.isFinite(n) || n < 1) {
+                useApp.getState().toast("先填张数");
+                return;
+              }
+              useApp.getState().setSettings({
+                multiDrawExactOn: true,
+                multiDrawInfinite: false,
+                multiDrawExact: Math.min(n, Number.MAX_SAFE_INTEGER),
+              });
+            }}
+          >
+            确定
+          </button>
+          <button
+            type="button"
+            className={`grid h-10 w-16 shrink-0 place-items-center rounded-[10px] border text-[20px] leading-none ${
+              infinite ? "border-primary bg-primary text-on-primary" : "border-line bg-card text-ink"
+            }`}
+            onClick={() =>
+              useApp.getState().setSettings(
+                infinite
+                  ? { multiDrawInfinite: false }
+                  : { multiDrawInfinite: true, multiDrawExactOn: false },
+              )
+            }
+          >
+            ∞
+          </button>
+        </div>
+        <button
+          type="button"
+          className="mt-5 flex h-11 w-full items-center justify-center rounded-full bg-primary text-[15px] text-on-primary"
+          onClick={onStart}
+        >
+          绘图
+        </button>
+      </div>
+    </div>
+  );
 }

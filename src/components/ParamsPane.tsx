@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Download, Folder as FolderIcon, Lock, Plus, Star, Trash2, Upload } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, Dices, Download, Folder as FolderIcon, Lock, Plus, Star, Trash2, Upload } from "lucide-react";
 import {
   joinPromptParts,
   NAI_MODELS,
@@ -23,7 +23,9 @@ import {
 } from "@/lib/image-ai";
 import type { AppearancePreset, Chat, CharacterPrompt, ImageParams, NaiModelId, NoiseSchedule, SamplerId, UcPreset } from "@/lib/types";
 import { cn, randomSeed, uid } from "@/lib/utils";
+import { appendPrompt } from "@/lib/random-prompt";
 import { LibraryDrawer } from "./LibraryDrawer";
+import { RandomSettings } from "./RandomPanels";
 import { Card, ChatAvatar, ExpandSelect, Slider, Switch, TextArea, ZoomImg } from "./ui-kit";
 import { ImagePick } from "./ImagePick";
 
@@ -117,8 +119,18 @@ export function ParamsPane({ chat, mode = "chat" }: { chat: Chat; mode?: "chat" 
     });
   };
 
+  const resId = `${p.width}x${p.height}`;
+  const [polarity, setPolarity] = useState<"pos" | "neg">("pos");
+  const [othersOpen, setOthersOpen] = useState(false);
+  const [randomOpen, setRandomOpen] = useState(false);
+  const inOthers = jump === "sampler" || jump === "steps" || jump === "img2img";
+
   useEffect(() => {
     if (!jump) return;
+    if (inOthers && !othersOpen) {
+      setOthersOpen(true);
+      return;
+    }
     let n = 0;
     let timer = 0;
     const run = () => {
@@ -131,7 +143,7 @@ export function ParamsPane({ chat, mode = "chat" }: { chat: Chat; mode?: "chat" 
     };
     timer = window.setTimeout(run, 40);
     return () => window.clearTimeout(timer);
-  }, [jump]);
+  }, [jump, inOthers, othersOpen]);
 
   useEffect(() => {
     if (!previewOpen) {
@@ -147,8 +159,6 @@ export function ParamsPane({ chat, mode = "chat" }: { chat: Chat; mode?: "chat" 
     document.addEventListener("pointerdown", fn);
     return () => document.removeEventListener("pointerdown", fn);
   }, [previewOpen]);
-
-  const resId = `${p.width}x${p.height}`;
 
   return (
     <div className={mode === "pure" ? "mx-auto max-w-lg px-4 pb-10 pt-1" : "mx-auto h-full max-w-lg overflow-y-auto px-4 pb-24 pt-3 scroll-thin"}>
@@ -208,6 +218,44 @@ export function ParamsPane({ chat, mode = "chat" }: { chat: Chat; mode?: "chat" 
         </>
       )}
 
+      {mode === "pure" && (
+        <div className="relative mb-3" data-preview-params ref={previewRef}>
+          <button
+            type="button"
+            className="flex h-12 w-full items-center justify-center rounded-full border border-line bg-card px-4 text-[14px]"
+            onClick={() => {
+              const next = !useApp.getState().ui.previewParams;
+              useApp.getState().setUI({ previewParams: next });
+              if (!next) setPeek(null);
+            }}
+          >
+            预览角色参数
+          </button>
+          <PreviewParamsDrawer
+            currentId="__pure__"
+            onPeek={(id) => {
+              const src = useApp.getState().chats.find((c) => c.id === id);
+              if (!src) return;
+              setPeek(structuredClone(src.imageParams));
+            }}
+            onApply={(id) => {
+              const src = useApp.getState().chats.find((c) => c.id === id);
+              if (!src) return;
+              const { characters: _c, useCoords: _u, ...rest } = structuredClone(src.imageParams);
+              useApp.getState().setPureParams({
+                ...rest,
+                img2imgBlobId: rest.img2imgBlobId || "",
+                img2imgStrength: rest.img2imgStrength ?? 0.7,
+                img2imgNoise: rest.img2imgNoise ?? 0,
+              });
+              setPeek(null);
+              useApp.getState().setUI({ previewParams: false });
+              useApp.getState().toast("已套用参数");
+            }}
+          />
+        </div>
+      )}
+
       <div className="mb-2 flex gap-1.5">
         {(
           [
@@ -228,7 +276,34 @@ export function ParamsPane({ chat, mode = "chat" }: { chat: Chat; mode?: "chat" 
         ))}
       </div>
 
-      {!hideSplit ? (
+      <div className="mb-2 flex items-center gap-2">
+        <div className="flex rounded-full bg-dim p-0.5 text-[13px]">
+          <button
+            type="button"
+            className={`rounded-full px-4 py-1 ${polarity === "pos" ? "bg-primary text-on-primary" : "text-ink"}`}
+            onClick={() => setPolarity("pos")}
+          >
+            正向
+          </button>
+          <button
+            type="button"
+            className={`rounded-full px-4 py-1 ${polarity === "neg" ? "bg-primary text-on-primary" : "text-ink"}`}
+            onClick={() => setPolarity("neg")}
+          >
+            负向
+          </button>
+        </div>
+        <button
+          type="button"
+          className="ml-auto grid size-9 place-items-center rounded-[10px] border border-line bg-card"
+          aria-label="随机设置"
+          onClick={() => setRandomOpen(true)}
+        >
+          <Dices className="size-4" />
+        </button>
+      </div>
+
+      {polarity === "pos" && (!hideSplit ? (
         <>
           <div className="mb-1 mt-3 text-[13px] font-medium">正面提示词.前</div>
           <PromptBox value={p.promptFront} suggest={p.tagSuggest} minH={120} onChange={(v) => patch({ promptFront: v })} />
@@ -279,8 +354,10 @@ export function ParamsPane({ chat, mode = "chat" }: { chat: Chat; mode?: "chat" 
           </button>
           <PromptBox value={p.promptMid} suggest={p.tagSuggest} minH={208} onChange={(v) => patch({ promptMid: v })} />
         </div>
-      )}
+      ))}
 
+      {polarity === "neg" && (
+        <>
       <div className="mt-4 text-[15px] font-medium">负面提示词</div>
       <div className="mb-2 mt-1 flex gap-1.5">
         {(["heavy", "light", "human", "custom"] as UcPreset[]).map((id) => (
@@ -300,60 +377,77 @@ export function ParamsPane({ chat, mode = "chat" }: { chat: Chat; mode?: "chat" 
         ))}
       </div>
       <PromptBox value={p.negative} suggest={p.tagSuggest} minH={88} onChange={(v) => patch({ negative: v, ucPreset: "custom" })} />
+        </>
+      )}
 
-      <div className="mb-3 mt-4 flex items-center justify-between" data-section="model">
-        <div className="text-[13px] font-medium">模型</div>
-        <ExpandSelect
-          value={p.model}
-          options={NAI_MODELS.map((m) => ({ id: m.id, label: m.label, short: m.label.replace("NAI ", "") }))}
-          onChange={(id) => patch({ model: id as NaiModelId })}
-          align="left"
-          menu="end"
-        />
+      <div className="mb-3 mt-4 flex items-start gap-3">
+        <div className="min-w-0 flex-1" data-section="model">
+          <div className="mb-1 text-[13px] font-medium">模型</div>
+          <ExpandSelect
+            value={p.model}
+            options={NAI_MODELS.map((m) => ({ id: m.id, label: m.label, short: m.label.replace("NAI ", "") }))}
+            onChange={(id) => patch({ model: id as NaiModelId })}
+            align="left"
+            menu="end"
+          />
+        </div>
+        <div className="min-w-0 flex-1" data-section="size">
+          <div className="mb-1 text-[13px] font-medium">分辨率</div>
+          <ExpandSelect
+            value={resId}
+            options={RESOLUTIONS.map((r) => ({ id: `${r.w}x${r.h}`, label: `${r.label}  ${r.w}×${r.h}`, short: `${r.w} × ${r.h}` }))}
+            onChange={(id) => {
+              const [w, h] = id.split("x").map(Number);
+              patch({ width: w, height: h });
+            }}
+            align="left"
+            menu="end"
+          />
+        </div>
       </div>
-      <div className="mb-3 flex items-center justify-between" data-section="size">
-        <div className="text-[13px] font-medium">分辨率</div>
-        <ExpandSelect
-          value={resId}
-          options={RESOLUTIONS.map((r) => ({ id: `${r.w}x${r.h}`, label: `${r.label}  ${r.w}×${r.h}`, short: `${r.w} × ${r.h}` }))}
-          onChange={(id) => {
-            const [w, h] = id.split("x").map(Number);
-            patch({ width: w, height: h });
+      <div className="mb-3 flex items-center gap-2" data-section="seed">
+        <div className="shrink-0 text-[13px] font-medium">种子</div>
+        <input
+          type="text"
+          inputMode="numeric"
+          data-seed-input
+          value={p.seed ?? ""}
+          placeholder="随机"
+          disabled={p.seedLocked}
+          onChange={(e) => {
+            const t = e.target.value.trim();
+            patch({ seed: t === "" ? null : Number(t) || 0 });
           }}
-          align="left"
-          menu="end"
+          className="h-9 min-w-0 flex-1 rounded-full border border-line bg-card px-3 text-[13px] outline-none disabled:opacity-40"
         />
+        <button
+          type="button"
+          className="grid size-9 shrink-0 place-items-center rounded-full border border-line"
+          onClick={() => patch({ seed: randomSeed() })}
+          aria-label="随机种子"
+        >
+          ↻
+        </button>
+        <button
+          type="button"
+          className={`grid size-9 shrink-0 place-items-center rounded-full ${p.seedLocked ? "text-primary" : "text-muted"}`}
+          onClick={() => patch({ seedLocked: !p.seedLocked })}
+          aria-label="锁定种子"
+        >
+          <Lock className="size-4" />
+        </button>
       </div>
-      <Img2ImgBox
-        blobId={p.img2imgBlobId}
-        strength={p.img2imgStrength ?? 0.7}
-        noise={p.img2imgNoise ?? 0}
-        onFile={async (file) => {
-          const seed = await naiSeedOf(file);
-          const blob = await compressRef(file, 1216, 0.9);
-          const id = await saveBlob(blob);
-          const next: Partial<ImageParams> = { img2imgBlobId: id };
-          if (p.img2imgStrength == null) next.img2imgStrength = 0.7;
-          if (p.img2imgNoise == null) next.img2imgNoise = 0;
-          if (seed != null) next.seed = seed;
-          commit(next);
-        }}
-        onBlob={async (blobId) => {
-          const blob = await getImage(blobId);
-          if (!blob) {
-            useApp.getState().toast("这张图已经不在了");
-            return;
-          }
-          const id = await saveBlob(blob);
-          const next: Partial<ImageParams> = { img2imgBlobId: id };
-          if (p.img2imgStrength == null) next.img2imgStrength = 0.7;
-          if (p.img2imgNoise == null) next.img2imgNoise = 0;
-          commit(next);
-        }}
-        onClear={() => commit({ img2imgBlobId: "" })}
-        onStrength={(n) => commit({ img2imgStrength: n })}
-        onNoise={(n) => commit({ img2imgNoise: n })}
-      />
+
+      <button
+        type="button"
+        className="mb-3 flex w-full items-center justify-between text-[15px] font-medium"
+        onClick={() => setOthersOpen((v) => !v)}
+      >
+        其他
+        <ChevronDown className={`size-4 transition ${othersOpen ? "rotate-180" : ""}`} />
+      </button>
+      {othersOpen && (
+        <>
       <div className="mb-3 flex items-center gap-2" data-section="sampler">
         <div className="flex min-w-0 flex-1 items-center gap-1">
           <div className="shrink-0 text-[13px] font-medium">采样器</div>
@@ -406,42 +500,40 @@ export function ParamsPane({ chat, mode = "chat" }: { chat: Chat; mode?: "chat" 
         onLock={(v) => patch({ cfgRescaleLocked: v })}
         onChange={(n) => patch({ cfgRescale: n })}
       />
-
-      <div className="mb-3 flex items-center gap-2" data-section="seed">
-        <div className="shrink-0 text-[13px] font-medium">种子</div>
-        <input
-          type="text"
-          inputMode="numeric"
-          data-seed-input
-          value={p.seed ?? ""}
-          placeholder="随机"
-          disabled={p.seedLocked}
-          onChange={(e) => {
-            const t = e.target.value.trim();
-            patch({ seed: t === "" ? null : Number(t) || 0 });
-          }}
-          className="h-9 min-w-0 flex-1 rounded-full border border-line bg-card px-3 text-[13px] outline-none disabled:opacity-40"
-        />
-        <button
-          type="button"
-          className="grid size-9 shrink-0 place-items-center rounded-full border border-line"
-          onClick={() => patch({ seed: randomSeed() })}
-          aria-label="随机种子"
-        >
-          ↻
-        </button>
-        <button
-          type="button"
-          className={`grid size-9 shrink-0 place-items-center rounded-full ${p.seedLocked ? "text-primary" : "text-muted"}`}
-          onClick={() => patch({ seedLocked: !p.seedLocked })}
-          aria-label="锁定种子"
-        >
-          <Lock className="size-4" />
-        </button>
-      </div>
-
       <RowSwitch label="Variety+" hint="动态跳过 CFG，增加构图变化" on={p.varietyPlus} onChange={(v) => patch({ varietyPlus: v })} />
       <RowSwitch label="Decrisper" hint="减轻过饱和" on={p.decrisper} onChange={(v) => patch({ decrisper: v })} />
+      <Img2ImgBox
+        blobId={p.img2imgBlobId}
+        strength={p.img2imgStrength ?? 0.7}
+        noise={p.img2imgNoise ?? 0}
+        onFile={async (file) => {
+          const seed = await naiSeedOf(file);
+          const blob = await compressRef(file, 1216, 0.9);
+          const id = await saveBlob(blob);
+          const next: Partial<ImageParams> = { img2imgBlobId: id };
+          if (p.img2imgStrength == null) next.img2imgStrength = 0.7;
+          if (p.img2imgNoise == null) next.img2imgNoise = 0;
+          if (seed != null) next.seed = seed;
+          commit(next);
+        }}
+        onBlob={async (blobId) => {
+          const blob = await getImage(blobId);
+          if (!blob) {
+            useApp.getState().toast("这张图已经不在了");
+            return;
+          }
+          const id = await saveBlob(blob);
+          const next: Partial<ImageParams> = { img2imgBlobId: id };
+          if (p.img2imgStrength == null) next.img2imgStrength = 0.7;
+          if (p.img2imgNoise == null) next.img2imgNoise = 0;
+          commit(next);
+        }}
+        onClear={() => commit({ img2imgBlobId: "" })}
+        onStrength={(n) => commit({ img2imgStrength: n })}
+        onNoise={(n) => commit({ img2imgNoise: n })}
+      />
+        </>
+      )}
 
       {!v3 && (
         <div className="mb-8 mt-4" data-section="chars">
@@ -539,6 +631,12 @@ export function ParamsPane({ chat, mode = "chat" }: { chat: Chat; mode?: "chat" 
             <Plus className="size-4" /> 添加角色
           </button>
         </div>
+      )}
+      {randomOpen && (
+        <RandomSettings
+          onClose={() => setRandomOpen(false)}
+          onInsert={(piece) => patch({ promptMid: appendPrompt(p.promptMid, piece) })}
+        />
       )}
     </div>
   );

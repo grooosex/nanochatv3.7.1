@@ -12,6 +12,7 @@ import type {
 } from "./types";
 import { DEFAULT_GROK, DEFAULT_LLM_PARAMS, DEFAULT_NAI_BASE, migrateGrokId, mergeLlmParams } from "./constants";
 import { parseStPresets } from "./st-preset";
+import { parseRandomBank } from "./random-prompt";
 import { llmIdentity } from "./image-ai";
 
 export const defaultSettings = (): Settings => ({
@@ -47,6 +48,11 @@ export const defaultSettings = (): Settings => ({
   imageModelId: null,
   imageModelPin: null,
   theme: "light",
+  multiDrawCount: 1,
+  multiDrawInfinite: false,
+  multiDrawExact: 1,
+  multiDrawExactOn: false,
+  random: { enabled: false, modules: [], comboLast: {} },
 });
 
 class HuiyuDB extends Dexie {
@@ -97,6 +103,12 @@ function parseLlmAccounts(raw: unknown): LlmAccount[] {
     });
   }
   return out;
+}
+
+function exactDrawCount(raw: unknown) {
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n) || n < 1) return 1;
+  return Math.min(n, Number.MAX_SAFE_INTEGER);
 }
 
 export async function loadAll() {
@@ -157,6 +169,11 @@ export async function loadAll() {
     chatImage: raw?.chatImage !== false,
     imageModelId: typeof raw?.imageModelId === "string" ? raw.imageModelId : null,
     imageModelPin: typeof raw?.imageModelPin === "string" ? raw.imageModelPin : null,
+    multiDrawCount: Math.min(10, Math.max(1, Math.round(Number(raw?.multiDrawCount) || 1))),
+    multiDrawInfinite: raw?.multiDrawInfinite === true && raw?.multiDrawExactOn !== true,
+    multiDrawExact: exactDrawCount(raw?.multiDrawExact),
+    multiDrawExactOn: raw?.multiDrawExactOn === true && raw?.multiDrawInfinite !== true,
+    random: parseRandomBank(raw?.random),
     llmIdentity:
       typeof raw?.llmIdentity === "string" && raw.llmIdentity
         ? raw.llmIdentity

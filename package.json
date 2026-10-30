@@ -16,7 +16,7 @@
     "preview:stop": "node scripts/preview.mjs stop",
     "typecheck": "tsc --noEmit",
     "check:auth": "node scripts/check-auth-invariant.mjs",
-    "test": "node --test 'scripts/**/*.test.mjs' && node --experimental-strip-types --test src/lib/app-data/app-data.test.ts src/lib/app-data/readiness-schedule.test.ts src/lib/auth/gate-identity.test.ts src/lib/auth/sign-in-gate.test.ts src/lib/role-polish.test.ts src/lib/user-markup.test.ts src/lib/legacy-archive.test.ts src/lib/prompt-flags.test.ts src/lib/rp-text.test.ts src/lib/st-preset.test.ts src/lib/chat-memory.test.ts src/lib/chat-prompt.test.ts src/lib/llm-models.test.ts src/lib/reply-markup.test.ts src/lib/image-ai.test.ts",
+    "test": "node --test 'scripts/**/*.test.mjs' && node --experimental-strip-types --test src/lib/app-data/app-data.test.ts src/lib/app-data/readiness-schedule.test.ts src/lib/auth/gate-identity.test.ts src/lib/auth/sign-in-gate.test.ts src/lib/role-polish.test.ts src/lib/role-text.test.ts src/lib/user-markup.test.ts src/lib/legacy-archive.test.ts src/lib/prompt-flags.test.ts src/lib/rp-text.test.ts src/lib/st-preset.test.ts src/lib/chat-memory.test.ts src/lib/chat-prompt.test.ts src/lib/llm-models.test.ts src/lib/reply-markup.test.ts src/lib/image-ai.test.ts src/lib/random-prompt.test.ts",
     "lint": "eslint .",
     "format": "prettier --write ."
   },

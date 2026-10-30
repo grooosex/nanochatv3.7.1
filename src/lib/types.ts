@@ -1,3 +1,5 @@
+import type { RandomBank } from "./random-prompt";
+
 export type TabId = "chat" | "params" | "pure";
 
 export type GrokModelId =
@@ -421,6 +423,16 @@ export interface Settings {
   favThumbs?: boolean;
   /** 纯生图角色栏锁定。收藏/历史应用参数时不覆盖角色。 */
   pureCharLocked?: boolean;
+  /** 一次绘图连着画几张。滑块，1–10。确定和无穷都没亮时用它。 */
+  multiDrawCount?: number;
+  /** 无视张数，一直画到再点绘图。和确定互斥。 */
+  multiDrawInfinite?: boolean;
+  /** 确定亮起时用的张数。至少 1，不封顶。 */
+  multiDrawExact?: number;
+  /** 亮起时不听滑块，听输入框。和无穷互斥。 */
+  multiDrawExactOn?: boolean;
+  /** 生图提示词里的随机模块。关着时符号当普通字。 */
+  random?: RandomBank;
 }
 
 export interface AppDataDump {

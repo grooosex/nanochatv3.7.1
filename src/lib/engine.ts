@@ -14,6 +14,7 @@ import { imagePresetStyle, presetStyle } from "./st-preset";
 import type { Chat, ChatMessage, GenImage, GrokModelId } from "./types";
 import { randomSeed, uid } from "./utils";
 import { imageFailText } from "./image-status";
+import { expandParams } from "./random-prompt";
 import { blobDataUrl, blobRawB64 } from "./ref-image";
 import {
   clipMemoryText,
@@ -481,26 +482,31 @@ export async function generateNai(opts: {
   onReceiving?: () => void;
   signal?: AbortSignal;
 }) {
+  const settings = useApp.getState().settings;
+  const rolled = expandParams(opts.chat.imageParams, settings.random);
+  if (rolled.bank && rolled.bank !== settings.random) useApp.getState().setSettings({ random: rolled.bank });
+  if (rolled.missing.length) useApp.getState().toast(`模块「${rolled.missing.join("、")}」没有可选项`);
+  const params = rolled.params;
   const built = buildNaiPayload({
-    params: opts.chat.imageParams,
+    params,
     grokTail: opts.grokTail,
     charTails: opts.charTails,
     insertMode: opts.chat.promptMode,
     seed: opts.seed,
   });
-  const blobId = opts.chat.imageParams.img2imgBlobId || opts.turnImageBlobId || "";
+  const blobId = params.img2imgBlobId || opts.turnImageBlobId || "";
   let img2img: { image: string; strength: number; noise: number } | undefined;
   if (blobId) {
     const blob = await getImage(blobId);
     if (blob) {
       img2img = {
         image: await blobRawB64(blob),
-        strength: clampUnit(opts.chat.imageParams.img2imgStrength ?? 0.7, 0.01, 0.99),
-        noise: clampUnit(opts.chat.imageParams.img2imgNoise ?? 0, 0, 0.99),
+        strength: clampUnit(params.img2imgStrength ?? 0.7, 0.01, 0.99),
+        noise: clampUnit(params.img2imgNoise ?? 0, 0, 0.99),
       };
     }
   }
-  const payload = buildIdlecloudBody(built, opts.chat.imageParams, opts.chat.promptMode, img2img);
+  const payload = buildIdlecloudBody(built, params, opts.chat.promptMode, img2img);
   opts.onStart?.();
   const finish = async (b64: string) => {
     opts.onReceiving?.();

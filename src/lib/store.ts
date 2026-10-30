@@ -11,6 +11,7 @@ import {
 import { db, defaultSettings, deleteImage, loadAll, putImage, rememberUrl } from "./idb";
 import { cloneChat } from "./archive";
 import { syncCharsFromRole } from "./nai";
+import { forgetIfPrompt, syncAppearanceModule } from "./random-prompt";
 import type {
   AppearancePreset,
   Character,
@@ -355,15 +356,18 @@ export const useApp = create<State>((set, get) => ({
       : live.sort((a, b) => b.updatedAt - a.updatedAt)[0]?.id ?? null;
     const lifted = liftImageAi(settings, live, currentId);
     const nextSettings = { ...settings, ...lifted };
-    if (!settings.imageModelId && !settings.imageModelPin && (lifted.imageModelId || lifted.imageModelPin)) {
-      void db.kv.put({ key: "settings", value: nextSettings });
+    const withRandom = syncAppearanceModule(nextSettings.random, data.appearances ?? [], "ensure");
+    const settingsFinal = withRandom === nextSettings.random ? nextSettings : { ...nextSettings, random: withRandom };
+    const liftDirty = !settings.imageModelId && !settings.imageModelPin && (lifted.imageModelId || lifted.imageModelPin);
+    if (liftDirty || settingsFinal !== nextSettings) {
+      void db.kv.put({ key: "settings", value: settingsFinal });
     }
     const favs = orderFavorites((data.favorites ?? []).map(migrateFavorite).filter(Boolean) as FavoriteItem[]);
     const tree = tidyFavTree(data.favGroups ?? [], favs);
     set({
       ready: true,
       ...data,
-      settings: nextSettings,
+      settings: settingsFinal,
       chats: live,
       favorites: tree.favorites,
       favGroups: tree.favGroups,
@@ -421,13 +425,24 @@ export const useApp = create<State>((set, get) => ({
       get().setPureParams(p);
       return;
     }
-    get().patchChat(id, (c) => ({ ...c, imageParams: { ...c.imageParams, ...p }, updatedAt: Date.now() }));
+    const chat = get().chats.find((c) => c.id === id);
+    if (!chat) return;
+    const imageParams = { ...chat.imageParams, ...p };
+    const bank = get().settings.random;
+    const random = bank ? forgetIfPrompt(bank, chat.imageParams, imageParams) : null;
+    get().patchChat(id, { imageParams });
+    if (random) get().setSettings({ random });
   },
 
   setPureParams: (p) => {
-    const pureParams = { ...get().pureParams, ...p };
+    const prev = get().pureParams;
+    const pureParams = { ...prev, ...p };
     set({ pureParams });
     void db.kv.put({ key: "pureParams", value: pureParams });
+    const bank = get().settings.random;
+    if (!bank) return;
+    const random = forgetIfPrompt(bank, prev, pureParams);
+    if (random) get().setSettings({ random });
   },
 
   newDraft: () => {
@@ -795,7 +810,10 @@ export const useApp = create<State>((set, get) => ({
   saveAppearance: (name, prompt) => {
     const a: AppearancePreset = { id: uid("ap_"), name, prompt, order: Date.now(), createdAt: Date.now() };
     void db.appearances.put(a);
-    set((s) => ({ appearances: [...s.appearances, a], ui: { ...s.ui, saveAppearOpen: false } }));
+    const appearances = [...get().appearances, a];
+    set((s) => ({ appearances, ui: { ...s.ui, saveAppearOpen: false } }));
+    const random = syncAppearanceModule(get().settings.random, appearances, "create");
+    if (random !== get().settings.random) get().setSettings({ random });
     get().toast(`已保存角色「${name}」`);
   },
 
@@ -807,7 +825,10 @@ export const useApp = create<State>((set, get) => ({
     }
     const next: AppearancePreset = { ...prev, name: name.trim() || prev.name, prompt };
     void db.appearances.put(next);
-    set((s) => ({ appearances: s.appearances.map((a) => (a.id === id ? next : a)) }));
+    const appearances = get().appearances.map((a) => (a.id === id ? next : a));
+    set({ appearances });
+    const random = syncAppearanceModule(get().settings.random, appearances, "update");
+    if (random !== get().settings.random) get().setSettings({ random });
     get().toast(`已保存角色「${next.name}」`);
   },
 
@@ -850,20 +871,23 @@ export const useApp = create<State>((set, get) => ({
 
   deleteAppearance: (id) => {
     void db.appearances.delete(id);
-    set((s) => ({ appearances: s.appearances.filter((a) => a.id !== id) }));
+    const appearances = get().appearances.filter((a) => a.id !== id);
+    set({ appearances });
+    const random = syncAppearanceModule(get().settings.random, appearances, "update");
+    if (random !== get().settings.random) get().setSettings({ random });
   },
 
   reorderAppearances: (ids) => {
     const order = new Map(ids.map((id, i) => [id, i]));
-    set((s) => {
-      const appearances = s.appearances.map((a) => {
-        if (!order.has(a.id)) return a;
-        const next = { ...a, order: order.get(a.id)! };
-        void db.appearances.put(next);
-        return next;
-      });
-      return { appearances };
+    const appearances = get().appearances.map((a) => {
+      if (!order.has(a.id)) return a;
+      const next = { ...a, order: order.get(a.id)! };
+      void db.appearances.put(next);
+      return next;
     });
+    set({ appearances });
+    const random = syncAppearanceModule(get().settings.random, appearances, "update");
+    if (random !== get().settings.random) get().setSettings({ random });
   },
 
   addFavorite: (blobId) => {
