@@ -57,22 +57,30 @@ function keptImageIds(dump: AppDataDump) {
     }
   }
   for (const session of Object.values(dump.wechatSessions ?? {})) addSession(ids, session);
+  for (const shots of Object.values(dump.composerShots ?? {})) {
+    for (const shot of shots ?? []) addId(ids, shot.blobId);
+  }
   return ids;
 }
 
 export async function exportArchive(kind: "full" | "lite" | "partial") {
-  const [chats, folders, cards, appearances, favorites, favGroups, history, settingsRow, wechatRow, stickerRow] = await Promise.all([
-    db.chats.toArray(),
-    db.folders.toArray(),
-    db.cards.toArray(),
-    db.appearances.toArray(),
-    db.favorites.toArray(),
-    db.favGroups.toArray(),
-    db.history.toArray(),
-    db.kv.get("settings"),
-    db.kv.get("wechatSessions"),
-    db.kv.get("wechatStickers"),
-  ]);
+  const [chats, folders, cards, appearances, favorites, favGroups, history, settingsRow, wechatRow, stickerRow, pureRow, currentRow, draftsRow, shotsRow] =
+    await Promise.all([
+      db.chats.toArray(),
+      db.folders.toArray(),
+      db.cards.toArray(),
+      db.appearances.toArray(),
+      db.favorites.toArray(),
+      db.favGroups.toArray(),
+      db.history.toArray(),
+      db.kv.get("settings"),
+      db.kv.get("wechatSessions"),
+      db.kv.get("wechatStickers"),
+      db.kv.get("pureParams"),
+      db.kv.get("currentId"),
+      db.kv.get("composerDrafts"),
+      db.kv.get("composerShots"),
+    ]);
   const dump: AppDataDump = {
     version: 1,
     settings: (settingsRow?.value as AppDataDump["settings"]) ?? {
@@ -115,11 +123,22 @@ export async function exportArchive(kind: "full" | "lite" | "partial") {
     hasImages: kind !== "lite",
     wechatSessions: (wechatRow?.value ?? {}) as AppDataDump["wechatSessions"],
     wechatStickers: (Array.isArray(stickerRow?.value) ? stickerRow.value : []) as WechatSticker[],
+    pureParams: pureRow?.value && typeof pureRow.value === "object" ? (pureRow.value as ImageParams) : undefined,
+    currentId: typeof currentRow?.value === "string" ? currentRow.value : null,
+    composerDrafts:
+      draftsRow?.value && typeof draftsRow.value === "object" && !Array.isArray(draftsRow.value)
+        ? (draftsRow.value as Record<string, string>)
+        : {},
+    composerShots:
+      shotsRow?.value && typeof shotsRow.value === "object" && !Array.isArray(shotsRow.value)
+        ? (shotsRow.value as AppDataDump["composerShots"])
+        : {},
   };
 
   if (kind === "lite") {
     dump.favorites = (dump.favorites ?? []).map((f) => ({ ...f, blobId: undefined }));
     dump.history = (dump.history ?? []).map((h) => ({ ...h, blobId: undefined }));
+    dump.composerShots = {};
     const blob = new Blob([JSON.stringify(dump)], { type: "application/json" });
     downloadBlob(blob, `绘语-无配图-${new Date().toISOString().slice(0, 10)}.json`);
     return;
@@ -238,6 +257,18 @@ export async function importArchive(file: File) {
     }
     if (Array.isArray(dump.wechatStickers)) {
       await db.kv.put({ key: "wechatStickers", value: dump.wechatStickers });
+    }
+    if (dump.pureParams && typeof dump.pureParams === "object") {
+      await db.kv.put({ key: "pureParams", value: dump.pureParams });
+    }
+    if ("currentId" in dump) {
+      await db.kv.put({ key: "currentId", value: typeof dump.currentId === "string" ? dump.currentId : null });
+    }
+    if (dump.composerDrafts && typeof dump.composerDrafts === "object") {
+      await db.kv.put({ key: "composerDrafts", value: dump.composerDrafts });
+    }
+    if (dump.composerShots && typeof dump.composerShots === "object") {
+      await db.kv.put({ key: "composerShots", value: dump.composerShots });
     }
   });
   for (const [id, blob] of imageBlobs) await putImage(id, blob);

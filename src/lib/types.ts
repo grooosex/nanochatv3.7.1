@@ -448,4 +448,12 @@ export interface AppDataDump {
   hasImages: boolean;
   wechatSessions?: Record<string, WechatSession>;
   wechatStickers?: WechatSticker[];
+  /** 纯生图当前这套参数。三种存档都带，没有图片。 */
+  pureParams?: ImageParams;
+  /** 上次打开的聊天。 */
+  currentId?: string | null;
+  /** 还没发出去的输入框文字。 */
+  composerDrafts?: Record<string, string>;
+  /** 还没发出去的附图。无配图存档里会清空。 */
+  composerShots?: Record<string, UserShot[]>;
 }

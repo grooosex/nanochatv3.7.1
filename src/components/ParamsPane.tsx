@@ -241,12 +241,17 @@ export function ParamsPane({ chat, mode = "chat" }: { chat: Chat; mode?: "chat" 
             onApply={(id) => {
               const src = useApp.getState().chats.find((c) => c.id === id);
               if (!src) return;
-              const { characters: _c, useCoords: _u, ...rest } = structuredClone(src.imageParams);
+              const next = structuredClone(src.imageParams);
+              const cur = useApp.getState().pureParams;
+              const locked = useApp.getState().settings.pureCharLocked === true;
               useApp.getState().setPureParams({
-                ...rest,
-                img2imgBlobId: rest.img2imgBlobId || "",
-                img2imgStrength: rest.img2imgStrength ?? 0.7,
-                img2imgNoise: rest.img2imgNoise ?? 0,
+                ...next,
+                ...(locked
+                  ? { characters: structuredClone(cur.characters), useCoords: cur.useCoords }
+                  : { characters: next.characters.map((c) => ({ ...c, name: "" })) }),
+                img2imgBlobId: next.img2imgBlobId || "",
+                img2imgStrength: next.img2imgStrength ?? 0.7,
+                img2imgNoise: next.img2imgNoise ?? 0,
               });
               setPeek(null);
               useApp.getState().setUI({ previewParams: false });

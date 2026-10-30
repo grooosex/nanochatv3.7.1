@@ -18,6 +18,7 @@ import { getImage, imageUrl } from "@/lib/idb";
 import { compressRef } from "@/lib/ref-image";
 import { modelLabel, samplerLabel } from "@/lib/nai";
 import { extractGrokTail } from "@/lib/nai-tags";
+import { joinPromptParts } from "@/lib/constants";
 import { ImagePick } from "./ImagePick";
 import { openWechat } from "./WechatPane";
 import { cancelWechatImage, paintWechat, lineImages } from "@/lib/wechat";
@@ -911,6 +912,39 @@ function IcoBtn({
   );
 }
 
+function applyChatImageToPure(chat: Chat, text: string, charTails: Record<string, string>, live: GenImage | undefined, insert: boolean) {
+  const next = structuredClone(chat.imageParams);
+  next.promptMid = joinPromptParts(next.promptMid, text);
+  if (live) {
+    next.model = live.model;
+    next.width = live.width;
+    next.height = live.height;
+    next.steps = live.steps;
+    next.sampler = live.sampler;
+    next.negative = live.negative;
+    if (live.status === "done") next.seed = live.seed;
+  }
+  const state = useApp.getState();
+  const locked = state.settings.pureCharLocked === true;
+  if (locked) {
+    next.characters = structuredClone(state.pureParams.characters);
+    next.useCoords = state.pureParams.useCoords;
+  } else {
+    next.characters = next.characters.map((c) => ({
+      ...c,
+      name: "",
+      prompt: insert ? joinPromptParts(c.prompt, charTails[c.id] ?? "") : c.prompt,
+    }));
+  }
+  state.setPureParams({
+    ...next,
+    img2imgBlobId: next.img2imgBlobId || "",
+    img2imgStrength: next.img2imgStrength ?? 0.7,
+    img2imgNoise: next.img2imgNoise ?? 0,
+  });
+  state.toast("应用成功");
+}
+
 export function CustomPromptModal() {
   const data = useApp((s) => s.ui.customPrompt);
   const setUI = useApp((s) => s.setUI);
@@ -942,6 +976,13 @@ export function CustomPromptModal() {
   const chars = chat.imageParams.characters;
   return (
     <Modal open onClose={() => setUI({ customPrompt: null })} title="自定义修改提示词">
+      <button
+        type="button"
+        className="mb-3 block text-left text-[13px] font-medium leading-5 text-primary"
+        onClick={() => applyChatImageToPure(chat, text, charTails, live, insert)}
+      >
+        应用到纯生图
+      </button>
       {insert ? (
         <>
           <p className="mb-3 text-[12px] leading-5 text-muted">
